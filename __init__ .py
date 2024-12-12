@@ -1,7 +1,7 @@
 bl_info = {
     "name": "OrthoBatch",
     "author": "Day Lane",
-    "version": (1, 1),
+    "version": (1, 2),
     "blender": (4, 00, 0),
     "location": "View3D > Sidebar > OrthoBatch",
     "description": "Orthographic image exports for batch meshes",
