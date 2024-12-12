@@ -83,6 +83,16 @@ bpy.types.WindowManager.orthobatch_exportPath = bpy.props.StringProperty(
     description = "The base directory in which to export all pictures",
     default = ""
 )
+bpy.types.WindowManager.orthobatch_importMode = bpy.props.EnumProperty(
+    name="Import mode",
+    description = "How should we get the models to render?",
+    items=[
+        ("currentfile", "Objects in this file", "Export all objects in this blend file"),
+        ("currentfile_selected", "Selected objects", "Export all objects in this blend file that are currently selected"),
+        ("folder", "Import folder", "Import model files from a directory")
+    ],
+    default = "folder"
+)
 bpy.types.WindowManager.orthobatch_limitSearch = bpy.props.BoolProperty(
     name="Limit maximum models",
     description = "If true, limit the total number of models that can be imported at once",
@@ -102,7 +112,7 @@ bpy.types.WindowManager.orthobatch_exportPathMode = bpy.props.EnumProperty(
         ("flatten", "Flatten", "Export files directly into export folder"),
         ("keeppath", "Keep relative paths", "Export files into a subdirectory of export folder that matches their path in the source folder"),
         ("flatten_foldername", "Flatten, name after folder", "Export files directly into export folder, but name them after the folder they were found in"),
-        ("flatten_pathname", "Flatten, name after path", "Export files directly into export folder, but name them after the full path they were found in (starting from the end of the base import folder)")
+        ("flatten_pathname", "Flatten, name after full path", "Export files directly into export folder, but name them after the full path they were found in (starting from the end of the base import folder)")
     ],
     default = "flatten"
 )
@@ -196,15 +206,19 @@ class ModelPath():
         return (selffoldercount < otherfoldercount)
     
     def imageExportPath(self, direction, exportpath, exportpathmode, exportNameMode):
+        subpathtrimmed = self.subpath
+        if subpathtrimmed.endswith(os.sep):
+            subpathtrimmed = subpathtrimmed[:-1]
+
         match exportpathmode:
             case "keeppath":
-                return os.path.join(exportpath, self.subpath, self.suffixName(direction, self.name, exportNameMode))
+                return os.path.join(exportpath, subpathtrimmed, self.suffixName(direction, self.name, exportNameMode))
             case "flatten":
                 return os.path.join(exportpath, self.suffixName(direction, self.name, exportNameMode))
             case "flatten_pathname":
-                return os.path.join(exportpath, self.suffixName(direction, self.subpath.replace(os.sep,'_') + "_" + self.name, exportNameMode))
+                return os.path.join(exportpath, self.suffixName(direction, subpathtrimmed.replace(os.sep,'_') + "_" + self.name, exportNameMode))
             case "flatten_foldername":
-                return os.path.join(exportpath, self.suffixName(direction, self.subpath.split(os.sep)[-1], exportNameMode))
+                return os.path.join(exportpath, self.suffixName(direction, subpathtrimmed.split(os.sep)[-1], exportNameMode))
             
     def suffixName(self, suffix, name, exportNameMode):
         match exportNameMode:
@@ -215,8 +229,8 @@ class ModelPath():
     
     def tryImport(self):
         try:
-            old_objs = set(bpy.context.scene.objects)
-            active_object = bpy.context.active_object
+            before_import_objects = set(bpy.context.scene.objects)
+            before_import_active = bpy.context.active_object
             match self.extension:
                 case "obj":
                     bpy.ops.wm.obj_import(
@@ -238,8 +252,8 @@ class ModelPath():
                     )
                 case _:
                     return (None, "FAILED: improper file extension")
-            bpy.context.view_layer.objects.active = active_object
-            imported = list(set(bpy.context.scene.objects) - old_objs)
+            bpy.context.view_layer.objects.active = before_import_active
+            imported = list(set(bpy.context.scene.objects) - before_import_objects)
             if len(imported) < 1:
                 return (None, "FAILED: No meshes found in imported object")
             elif len(imported) == 1:
@@ -247,7 +261,7 @@ class ModelPath():
             else:
                 with bpy.context.temp_override(active_object=imported[0], selected_objects=imported[1:]):
                     bpy.ops.object.join()
-                    return (active_object, "succeeded")
+                    return (before_import_active, "succeeded")
         
         except Exception as error:
             return (None, "FAILED: "+str(error))
@@ -375,107 +389,170 @@ def shoottarget(camera, target, direction, path):
     bpy.ops.render.render(write_still = True)
 
 
+# Set up an object and shoot it from all required directions, save the images, then clean up
+#   object : the model object to shoot
+#   cam : the camera to use
+#   modelpath : the ModelPath object to use to save out the file
+@persistent
+def prepare_shoot_clean_object(object, cam, modelpath):
+    # back up rendered object's backface culling state
+    old_culling = [False] * len(object.data.materials)
+    for i in range(len(object.data.materials)):
+        old_culling[i] = object.data.materials[i].use_backface_culling if object.data.materials[i] != None else False
+        if object.data.materials[i] != None:
+            object.data.materials[i].use_backface_culling = bpy.context.window_manager.orthobatch_backCulling
+
+    object.hide_render = False
+    
+    for dir in bpy.context.window_manager.orthobatch_shootDirections:
+        exportpath = modelpath.imageExportPath(
+            direction = dir,
+            exportpath = bpy.context.window_manager.orthobatch_exportPath,
+            exportpathmode = bpy.context.window_manager.orthobatch_exportPathMode,
+            exportNameMode = bpy.context.window_manager.orthobatch_exportNameMode
+        )
+        
+        print(exportpath)
+        
+        shoottarget(
+            camera = cam,
+            target = object,
+            direction = dir,
+            path = exportpath
+        )
+    
+    object.hide_render = True
+        
+    # restore rendered object's backface culling state
+    for i in range(len(object.data.materials)):
+        if object.data.materials[i] != None:
+            object.data.materials[i].use_backface_culling = old_culling[i]
+
 def main():
     
     print("\n")
     print("Running ORTHOBATCH main func")
     
-    #checks
+    # assertions
     if (len(bpy.context.window_manager.orthobatch_shootDirections) < 1):
         ShowMessageBox("ABORTING: Should have at least one photo direction enabled")
         return
     
+    # validatations
     if not bpy.context.window_manager.orthobatch_sourcePath.endswith(os.sep):
         bpy.context.window_manager.orthobatch_sourcePath += os.sep
 
-    print("Finding models...")
-    modelpaths = getAllModelPaths(
-        bpy.context.window_manager.orthobatch_sourcePath,
-        VALID_IMPORT_EXTENSIONS
-    )
-
-    if (len(modelpaths) < 1):
-        ShowMessageBox("ABORTING: Source directory has no valid model files (valid extensions are)")
-        return
-    
-    print("Found "+str(len(modelpaths))+" models...")
-    modelpaths = sorted(modelpaths)
-    
-    if (bpy.context.window_manager.orthobatch_limitSearch):
-        count = min(bpy.context.window_manager.orthobatch_maxFiles, len(modelpaths))
-        print("Limiting to "+str(count)+" models...")
-        modelpaths = modelpaths[:count]
-    
-    print("Preparing orthocam...")  
-    camera = prepareorthocam()
-    
-    print("Preparing universal render settings...")  
-    prepareuniversalrendersettings()
-
     # back up old objects and their render hidden state, then set them all invisible to render
-    old_objs = bpy.context.scene.objects
+    old_objs = list(bpy.context.scene.objects)
     old_objs_werehidden = [False] * len(old_objs)
     for oi in range(len(old_objs)):
         old_objs_werehidden[oi] = old_objs[oi].hide_render
         old_objs[oi].hide_render = True
 
-    importresults_fails = []
-    importresults_successes = []
-    importsuccesses = 0
-    for path in modelpaths:
-        print("Attempting import of "+str(path))
-        
-        out = path.tryImport()
-        
-        if (out[0] == None):
-            importresults_fails += [(
-                path.filepath,
-                out[1]
-            )]
-            continue
-            
-        else:
-            importresults_successes += [(
-                path.filepath,
-                out[1]
-            )]
-            
-            for mat in out[0].data.materials:
-                mat.use_backface_culling = bpy.context.window_manager.orthobatch_backCulling
-            for dir in bpy.context.window_manager.orthobatch_shootDirections:
-                exportpath = path.imageExportPath(
-                    direction = dir,
-                    exportpath = bpy.context.window_manager.orthobatch_exportPath,
-                    exportpathmode = bpy.context.window_manager.orthobatch_exportPathMode,
-                    exportNameMode = bpy.context.window_manager.orthobatch_exportNameMode
-                )
-                print(exportpath)
-                
-                shoottarget(
-                    camera = camera,
-                    target = out[0],
-                    direction = dir,
-                    path = exportpath
-                )
-            disposeobject(out[0])
-
-    prnt = "Successfully imported " + str(importresults_successes) + " files:"
-    for success in importresults_successes:
-        prnt += "\n" + success[0] + " " + success[1]
-
-    if (len(importresults_fails) > 0):
-        prnt += "Failed to import " + str(importresults_fails) + " files:"
-        for failure in importresults_fails:
-            prnt += "\n" + failure[0] + " " + failure[1]
+    # prepare the orthographic camera
+    print("Preparing orthocam...")  
+    camera = prepareorthocam()
     
-    ShowMessageBox(prnt)
+    # prepare the rendering settings
+    print("Preparing universal render settings...")  
+    prepareuniversalrendersettings()
+
+    try:
+
+        match(bpy.context.window_manager.orthobatch_importMode):
+
+            case "folder":
+
+                # find all models in folder
+                print("Finding models...")
+                modelpaths = getAllModelPaths(
+                    bpy.context.window_manager.orthobatch_sourcePath,
+                    VALID_IMPORT_EXTENSIONS
+                )
+                print("Found "+str(len(modelpaths))+" models...")
+                modelpaths = sorted(modelpaths)
+
+                # assertions
+                if (len(modelpaths) < 1):
+                    ShowMessageBox("ABORTING: Source directory has no valid model files (valid extensions are)")
+                    return
+                
+                # validations
+                if (bpy.context.window_manager.orthobatch_limitSearch):
+                    count = min(bpy.context.window_manager.orthobatch_maxFiles, len(modelpaths))
+                    print("Limiting to "+str(count)+" models...")
+                    modelpaths = modelpaths[:count]
+                
+                
+                importresults_fails = []
+                importresults_successes = []
+                importsuccesses = 0
+                for path in modelpaths:
+                    print("Attempting import of "+str(path))
+                    
+                    out = path.tryImport()
+                    
+                    if (out[0] == None):
+                        importresults_fails += [(
+                            path.filepath,
+                            out[1]
+                        )]
+                        continue
+                        
+                    else:
+                        importresults_successes += [(
+                            path.filepath,
+                            out[1]
+                        )]
+                        
+                        prepare_shoot_clean_object(out[0], camera, path)
+                        disposeobject(out[0])
+
+                prnt = "Successfully imported " + str(importresults_successes) + " files:"
+                for success in importresults_successes:
+                    prnt += "\n" + success[0] + " " + success[1]
+
+                if (len(importresults_fails) > 0):
+                    prnt += "Failed to import " + str(importresults_fails) + " files:"
+                    for failure in importresults_fails:
+                        prnt += "\n" + failure[0] + " " + failure[1]
+        
+                ShowMessageBox(prnt)
+
+            case "currentfile":
+                local_objects_to_shoot = filter_meshes_from_objlist(list(bpy.context.selectable_objects))
+
+            case "currentfile_selected":
+                local_objects_to_shoot = filter_meshes_from_objlist(list(bpy.context.selected_objects))
+
+        if (bpy.context.window_manager.orthobatch_importMode != "folder"):
+            for obj in local_objects_to_shoot:
+                if obj == None or obj.type != 'MESH':
+                    continue
+                name_with_temp_suffix = obj.name + '.standin'
+                print(name_with_temp_suffix)
+                no_import_modelpath = ModelPath(name_with_temp_suffix, name_with_temp_suffix, bpy.context.window_manager.orthobatch_sourcePath)
+                prepare_shoot_clean_object(obj, camera, no_import_modelpath)
+
+    except Exception as e:
+        ShowMessageBox(f"An error occurred: {e}")
 
     # restore old objects' hidden state
     for oi in range(len(old_objs)):
         old_objs[oi].hide_render = old_objs_werehidden[oi]
 
+    # clean up the orthographic camera
     disposeobject(camera)
 
+@persistent
+def filter_meshes_from_objlist(objlist):
+    listlen = len(objlist)
+    for i in range(listlen):
+        j = listlen - i - 1
+        obj = objlist[j]
+        if obj == None or obj.type != 'MESH':
+            objlist.pop(j)
+    return objlist
     
 # region UI functions  
 class ORTHOBATCH_func_execute(bpy.types.Operator):
@@ -570,43 +647,46 @@ class ORTHOBATCH_PT_panel(bpy.types.Panel):
         
         layout.operator(ORTHOBATCH_func_execute.bl_idname)
         
-        layout.separator(factor=sectionspace)
+        # layout.separator(factor=sectionspace)
         r = layout.row()
-        r.prop_enum(
-            context.window_manager,
-            "orthobatch_editingpage",
-            "import"
-        )
-        r.prop_enum(
-            context.window_manager,
-            "orthobatch_editingpage",
-            "shooting"
-        )
-        r.prop_enum(
-            context.window_manager,
-            "orthobatch_editingpage",
-            "export"
-        )
+        r.prop(context.window_manager, "orthobatch_editingpage", expand=True)
         layout.separator(factor=sectionspace)
-
+        layout.separator(factor=sectionspace)
         
         match(context.window_manager.orthobatch_editingpage):
 
             case "import":
                 
-                b = layout.box()
-                r = b.row()
-                r.label(text="Import models from folder:")
-                # r.operator(ORTHOBATCH_func_resetimportpath.bl_idname, text="reset")
-                b.prop(context.window_manager, "orthobatch_sourcePath", text="", expand=True, icon_only =True)
-                r.operator(ORTHOBATCH_func_browseForImportDirectory.bl_idname, text="browse")
-                r.label(text="(valid filetypes: "+", ".join(VALID_IMPORT_EXTENSIONS)+")")
+                r = layout.row()
+                r.prop(context.window_manager, "orthobatch_importMode", expand=True)
 
-                layout.prop(context.window_manager, "orthobatch_limitSearch")
-                if (bpy.context.window_manager.orthobatch_limitSearch):
-                    r = layout.row()
-                    r.label(text="Maximum imported models:")
-                    r.prop(context.window_manager, "orthobatch_maxFiles", slider=True, text="")
+                match(context.window_manager.orthobatch_importMode):
+                    
+                    case "folder":
+                        b = layout.box()
+                        r = b.row()
+                        r.label(text="Import models from folder:")
+                        # r.operator(ORTHOBATCH_func_resetimportpath.bl_idname, text="reset")
+                        b.prop(context.window_manager, "orthobatch_sourcePath", text="", expand=True, icon_only =True)
+                        r.operator(ORTHOBATCH_func_browseForImportDirectory.bl_idname, text="browse")
+                        r = b.row()
+                        r.label(text="(valid filetypes: "+", ".join(VALID_IMPORT_EXTENSIONS)+")")
+
+                        layout.prop(context.window_manager, "orthobatch_limitSearch")
+                        if (bpy.context.window_manager.orthobatch_limitSearch):
+                            r = layout.row()
+                            r.label(text="Maximum imported models:")
+                            r.prop(context.window_manager, "orthobatch_maxFiles", slider=True, text="")
+                    
+                    case "currentfile":
+                        r = layout.row()
+                        meshes_in_file = len(filter_meshes_from_objlist(list(bpy.context.selectable_objects)))
+                        r.label(text=(str(meshes_in_file) + " meshes visible and selectable"))
+
+                    case "currentfile_selected":
+                        r = layout.row()
+                        meshes_selected = len(filter_meshes_from_objlist(list(bpy.context.selected_objects)))
+                        r.label(text=(str(meshes_selected) + " meshes selected"))
             
             
             case "shooting":
