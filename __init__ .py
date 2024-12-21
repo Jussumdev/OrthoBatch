@@ -61,11 +61,66 @@ bpy.types.WindowManager.orthobatch_editingpage = bpy.props.EnumProperty(
     ],
     default = "import"
 )
+
+
+scaleMode_name = "Output image sizing"
+scaleMode_uniform_desc = "All renders will be made with the same number of pixels per unit"
+scaleMode_samesize_desc = "All render images will be the same size";
+bpy.types.WindowManager.orthobatch_scaleMode = bpy.props.EnumProperty(
+    name=scaleMode_name,
+    description = "How should we size the output images?",
+    items=[
+        ("uniformscale", "Uniform pixels per unit", scaleMode_uniform_desc),
+        ("samesize", "Uniform output image size", scaleMode_samesize_desc)
+    ],
+    default = "uniformscale"
+)
+
+
 bpy.types.WindowManager.orthobatch_imgSize = bpy.props.IntProperty(
     name="Pixels per unit",
     description = "The number of pixels alocated to a single unit of size in export",
     default = 256
 )
+
+maxImgSize_name = "Max image dimension"
+bpy.types.WindowManager.orthobatch_maxImgSize = bpy.props.EnumProperty(
+    name=maxImgSize_name,
+    description = "The maximum pixel size of an exported image in the X or Y dimension",
+    
+    items=[
+        ("256", "256", "256 pixels"),
+        ("512", "512", "512 pixels"),
+        ("1024", "1024", "1024 pixels"),
+        ("2048", "2048", "2048 pixels"),
+        ("4096", "4096", "4096 pixels"),
+        ("8192", "8192", "8192 pixels"),
+        ("16384", "16384", "16384 pixels"),
+
+        ("other", "Other", "Some other dimension"),
+    ],
+    default = "4096"
+)
+bpy.types.WindowManager.orthobatch_maxImgSize_other = bpy.props.IntProperty(
+    name="Max size (pixels)",
+    description = "The maximum pixel size of an exported image when Max image dimension is set to 'other'",
+    min = 256,
+    max = 16384,
+    default = 4096
+)
+
+imgDivideMode_name = "Output size capping"
+bpy.types.WindowManager.orthobatch_imgDivideMode = bpy.props.EnumProperty(
+    name=imgDivideMode_name,
+    description = "How should we treat renders that are larger than the desired maximum size?",
+    items=[
+        ("reduceres", "Reduce pixels per unit", "The pixels per unit will be lowered to match the max size. This may cause different objects to be exported at different resolutions."),
+        ("evensize", "Divide into equal size", "Divide the render into multiple sub-images with equal size"),
+        ("maxsize", "Divide into max size", "Divide the render into multiple sub-images that try to take the maximum dimension"),
+    ],
+    default = "maxsize"
+)
+
 bpy.types.WindowManager.orthobatch_imgPadding = bpy.props.FloatProperty(
     name="Image padding",
     description = "Add extra units of space to the edges of the exported image",
@@ -97,6 +152,17 @@ bpy.types.WindowManager.orthobatch_limitSearch = bpy.props.BoolProperty(
     name="Limit maximum models",
     description = "If true, limit the total number of models that can be imported at once",
     default = False
+)
+bpy.types.WindowManager.orthobatch_overrideStartSearch = bpy.props.BoolProperty(
+    name="Start after first model",
+    description = "If true, only import models after the chosen index",
+    default = False
+)
+bpy.types.WindowManager.orthobatch_startSearch = bpy.props.IntProperty(
+    name="Start model index",
+    description = "First model index to import (alphabetically)",
+    default = 0,
+    min = 0
 )
 bpy.types.WindowManager.orthobatch_maxFiles = bpy.props.IntProperty(
     name="Max files",
@@ -301,11 +367,11 @@ def prepareuniversalrendersettings():
     worldmat = bpy.data.materials.get("WorldMat")
     if worldmat is None:
         worldmat = bpy.data.materials.new(name="WorldMat")
-        
-    w = bpy.data.worlds['World']
-    w.use_nodes = False
+
+    bpy.data.worlds['World'].use_nodes = False
+
     br = bpy.context.window_manager.orthobatch_imgBrightness
-    w.color = mathutils.Color((br,br,br))
+    bpy.data.worlds['World'].color = mathutils.Color((br,br,br))
         
 
 @persistent
@@ -326,6 +392,53 @@ def disposeobject(object):
     bpy.ops.object.select_all(action='DESELECT')
     bpy.data.objects[object.name].select_set(True)
     bpy.ops.object.delete() 
+
+
+@persistent  
+def render(basepath, max_res):
+
+    pieces_x = math.ceil(float(bpy.context.scene.render.resolution_x) / float(max_res))
+    pieces_y = math.ceil(float(bpy.context.scene.render.resolution_y) / float(max_res))
+    
+    if (pieces_x == 1 and pieces_y == 1):
+        bpy.context.scene.render.use_border = False
+        bpy.context.scene.render.use_crop_to_border = False
+        bpy.context.scene.render.filepath = basepath
+        bpy.ops.render.render(write_still = True)
+
+    else:
+        bpy.context.scene.render.use_border = True
+        bpy.context.scene.render.use_crop_to_border = True
+        for row in range(pieces_x):
+            for column in range(pieces_y):
+                
+                rndrpath = basepath + ("_{}_{}".format(row + 1, column + 1))
+                bpy.context.scene.render.filepath = rndrpath
+
+                match(bpy.context.window_manager.orthobatch_imgDivideMode):
+
+                    case "evensize":
+                        bpy.context.scene.render.border_min_x = (1 / pieces_x) * row
+                        bpy.context.scene.render.border_max_x = (1 / pieces_x) * (row + 1)
+                        bpy.context.scene.render.border_min_y = (1 / pieces_y) * column
+                        bpy.context.scene.render.border_max_y = (1 / pieces_y) * (column + 1)
+
+                    case "maxsize":
+                        bpy.context.scene.render.border_min_x = (max_res * row) / bpy.context.scene.render.resolution_x
+                        bpy.context.scene.render.border_max_x = min(max_res * (row + 1), bpy.context.scene.render.resolution_x) / bpy.context.scene.render.resolution_x
+                        bpy.context.scene.render.border_min_y = (max_res * column) / bpy.context.scene.render.resolution_y
+                        bpy.context.scene.render.border_max_y = min(max_res * (column + 1), bpy.context.scene.render.resolution_y) / bpy.context.scene.render.resolution_y
+
+                        
+                print("rendering " + rndrpath +
+                      ": " + str(bpy.context.scene.render.border_min_x)+
+                      " - " + str(bpy.context.scene.render.border_max_x)+
+                      " x " + str(bpy.context.scene.render.border_min_y)+
+                      " - " + str(bpy.context.scene.render.border_max_y))
+                
+                bpy.ops.render.render(animation=False, write_still = True)
+                bpy.ops.outliner.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
+
 
 
 @persistent
@@ -377,16 +490,50 @@ def shoottarget(camera, target, direction, path):
     
     camlookat(camera, target_bb_center)
     
-    r = bpy.context.scene.render
-    r.resolution_x = math.ceil(bpy.context.window_manager.orthobatch_imgSize * target_bb_viewsize[0])
-    r.resolution_y = math.ceil(bpy.context.window_manager.orthobatch_imgSize * target_bb_viewsize[1])
+    max_image_size = -1
+    match(bpy.context.window_manager.orthobatch_maxImgSize):
+        case "128":
+            max_image_size = 128
+        case "256":
+            max_image_size = 256
+        case "512":
+            max_image_size = 512
+        case "1024":
+            max_image_size = 1024
+        case "2048":
+            max_image_size = 2048
+        case "4096":
+            max_image_size = 4096
+        case "8192":
+            max_image_size = 8192
+        case "16384":
+            max_image_size = 16384
+        case "other":
+            max_image_size = bpy.context.window_manager.orthobatch_maxImgSize.other
+
+
+    px_per_unit = -1
+    match(bpy.context.window_manager.orthobatch_scaleMode):
+        case "uniformscale":
+            px_per_unit = bpy.context.window_manager.orthobatch_imgSize
+            if (bpy.context.window_manager.orthobatch_imgDivideMode == "reduceres"):
+                if (max(target_bb_viewsize[0], target_bb_viewsize[1]) * px_per_unit > max_image_size):
+                    px_per_unit = (max_image_size / max(target_bb_viewsize[0], target_bb_viewsize[1]))
+        case "samesize":
+            px_per_unit = (max_image_size / max(target_bb_viewsize[0], target_bb_viewsize[1]))
+
+    bpy.context.scene.render.resolution_x = math.ceil(px_per_unit * target_bb_viewsize[0])
+    bpy.context.scene.render.resolution_y = math.ceil(px_per_unit * target_bb_viewsize[1])
+
     # camera.data.sensor_fit = "HORIZONTAL"
     # camera.data.ortho_scale = target_bb_viewsize[0]
     camera.data.sensor_fit = "AUTO"
     camera.data.ortho_scale = max(target_bb_viewsize[0], target_bb_viewsize[1])
     
-    bpy.context.scene.render.filepath = path
-    bpy.ops.render.render(write_still = True)
+    render(path, max_image_size)
+
+    bpy.ops.outliner.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
+
 
 
 # Set up an object and shoot it from all required directions, save the images, then clean up
@@ -478,6 +625,11 @@ def main():
                     return
                 
                 # validations
+                firstindex = 0
+                if (bpy.types.WindowManager.orthobatch_overrideStartSearch):
+                    firstindex = min(bpy.context.window_manager.orthobatch_startSearch, len(modelpaths))
+                    print("Starting at model index "+str(firstindex)+"...")
+                    modelpaths = modelpaths[firstindex:]
                 if (bpy.context.window_manager.orthobatch_limitSearch):
                     count = min(bpy.context.window_manager.orthobatch_maxFiles, len(modelpaths))
                     print("Limiting to "+str(count)+" models...")
@@ -561,6 +713,9 @@ class ORTHOBATCH_func_execute(bpy.types.Operator):
 
     def execute(self, context):
         main()
+        # for i in range(100):
+        #     bpy.ops.render.render(write_still = True)
+        #     bpy.ops.outliner.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
         return {'FINISHED'}
 
 class ORTHOBATCH_func_resetimportpath(bpy.types.Operator):
@@ -643,6 +798,7 @@ class ORTHOBATCH_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         sectionspace = 1.5
+        
         layout = self.layout
         
         layout.operator(ORTHOBATCH_func_execute.bl_idname)
@@ -677,6 +833,12 @@ class ORTHOBATCH_PT_panel(bpy.types.Panel):
                             r = layout.row()
                             r.label(text="Maximum imported models:")
                             r.prop(context.window_manager, "orthobatch_maxFiles", slider=True, text="")
+
+                        layout.prop(context.window_manager, "orthobatch_overrideStartSearch")
+                        if (bpy.context.window_manager.orthobatch_overrideStartSearch):
+                            r = layout.row()
+                            r.label(text="Start at model index:")
+                            r.prop(context.window_manager, "orthobatch_startSearch", slider=False, text="")
                     
                     case "currentfile":
                         r = layout.row()
@@ -722,14 +884,58 @@ class ORTHOBATCH_PT_panel(bpy.types.Panel):
                     context.window_manager,
                     "orthobatch_exportPathMode"
                 )
-                
-                r = layout.row()
-                r.label(text="Pixels per unit:")
-                r.prop(context.window_manager, "orthobatch_imgSize", text="")
 
                 r = layout.row()
                 r.label(text="Image padding (units):")
                 r.prop(context.window_manager, "orthobatch_imgPadding", slider=True, text="")
+
+                
+                layout.separator(factor=sectionspace)
+                layout.separator(factor=sectionspace)
+        
+                r = layout.row()
+                r.label(text=scaleMode_name)
+                r.prop_menu_enum(
+                    bpy.context.window_manager,
+                    "orthobatch_scaleMode"
+                )
+
+                b = layout.box()
+                if (bpy.context.window_manager.orthobatch_scaleMode == "uniformscale"):
+                    r = b.row()
+                    r.label(text=scaleMode_uniform_desc)
+                
+                    r = b.row()
+                    r.label(text="Pixels per unit:")
+                    r.prop(context.window_manager, "orthobatch_imgSize", text="")
+                    
+                    r = b.row()
+                    r.label(text=imgDivideMode_name)
+                    r.props_enum(
+                        bpy.context.window_manager,
+                        "orthobatch_imgDivideMode"
+                    )
+
+                
+                elif (bpy.context.window_manager.orthobatch_scaleMode == "samesize"):
+                    r = b.row()
+                    r.label(text=scaleMode_samesize_desc)
+
+                r = b.row()
+                r.label(text=maxImgSize_name + ": " + bpy.context.window_manager.orthobatch_maxImgSize)
+                r.prop_menu_enum(
+                    bpy.context.window_manager,
+                    "orthobatch_maxImgSize"
+                )
+                if (bpy.context.window_manager.orthobatch_maxImgSize == "other"):
+                    r = b.row()
+                    r.label(text="Custom max dimension:")
+                    r.prop(context.window_manager, "orthobatch_maxImgSize_other", text="")
+
+
+                layout.separator(factor=sectionspace)
+                layout.separator(factor=sectionspace)
+
                 
                 b = layout.box()
                 b.label(text="File format:")
