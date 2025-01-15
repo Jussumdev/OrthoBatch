@@ -1,0 +1,30 @@
+schema_version = "1.0.0"
+
+id = "orthobatch"
+version = "1.2.3"
+name = "OrthoBatch"
+tagline = "Orthographic image exports for batch meshes"
+maintainer = "Day Lane <dayroselane@gmail.com>"
+type = "add-on"
+
+tags = ["3D View", "Mesh", "Object", "Scene", "User Interface"]
+
+# ---------- update over time
+blender_version_min = "4.0.0"
+# ----------
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+copyright = [
+  "2024-2025 Day Lane",
+]
+
+# Additional Information from bl_info
+location = "View3D > Sidebar > OrthoBatch"
+description = "Orthographic image exports for batch meshes"
+category = "3D View"
+
+[permissions]
+files = "Import model files from disk, export image files"

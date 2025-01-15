@@ -1,13 +1,22 @@
+# OrthoBatch for Blender © 2024-2025 by Day Lane is licensed under CC BY-SA 4.0.
+#
+# This license requires that reusers give credit to the creator.
+# It allows reusers to distribute, remix, adapt, and build upon the material in any medium or format, even for commercial purposes.
+# If others remix, adapt, or build upon the material, they must license the modified material under identical terms.
+#
+# To view a copy of this license, visit https://creativecommons.org/licenses/by-sa/4.0/
+
 bl_info = {
     "name": "OrthoBatch",
+    "id": "orthobatch",
     "author": "Day Lane",
-    "version": (1, 2),
+    "version": (1, 2, 3),
     "blender": (4, 00, 0),
     "location": "View3D > Sidebar > OrthoBatch",
     "description": "Orthographic image exports for batch meshes",
     "warning": "",
-    "wiki_url": "",
-    "category": "3D View"}
+    "category": "3D View"
+}
 
 import os
 import sys
